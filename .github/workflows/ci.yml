@@ -1,0 +1,123 @@
+name: 🚀 CI
+
+on:
+  push:
+    branches: [ main, lua ]
+  pull_request:
+    branches: [ main, lua ]
+
+jobs:
+  test:
+    name: 🧪 Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        neovim-version: ['stable', 'nightly']
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⚡ Install Neovim
+      uses: MeanderingProgrammer/setup-neovim@v1
+      with:
+        version: ${{ matrix.neovim-version }}
+        
+    - name: 📚 Install test dependencies
+      run: |
+        git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
+        
+    - name: 🧪 Run tests
+      run: |
+        nvim --version
+        make test
+        
+    - name: 🐚 Test with shell script
+      run: ./test.sh
+
+  lint:
+    name: 🎨 Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🎨 Install stylua
+      run: |
+        wget -qO- https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux-x86_64.zip | funzip > stylua
+        chmod +x stylua
+        sudo mv stylua /usr/local/bin/
+        
+    - name: ✨ Check Lua formatting
+      run: |
+        stylua --check lua/ test/
+        
+    - name: 🔍 Install luacheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y luarocks
+        sudo luarocks install luacheck
+        
+    - name: 🔍 Run luacheck
+      run: |
+        luacheck lua/ test/ --globals vim --std luajit
+
+  docs:
+    name: 📖 Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📋 Check documentation files
+      run: |
+        # Check that all required documentation exists
+        test -f README.md
+        test -f CHANGELOG.md
+        test -f doc/projectionist.txt
+        test -f LICENSE
+        
+    - name: ✅ Validate help tags
+      uses: MeanderingProgrammer/setup-neovim@v1
+      with:
+        version: stable
+    - run: |
+        nvim --headless -c "helptags doc/" -c "qa!"
+        test -f doc/tags
+
+  compatibility:
+    name: 🔄 Compatibility Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⚡ Install Neovim
+      uses: MeanderingProgrammer/setup-neovim@v1
+      with:
+        version: stable
+        
+    - name: 🌐 Test cross-shell compatibility
+      run: |
+        # Test in bash
+        bash -c "./test.sh"
+        
+        # Test in zsh (if available)
+        if command -v zsh >/dev/null 2>&1; then
+          zsh -c "./test.sh"
+        fi
+        
+        # Test Make target
+        make test
+        
+    - name: 🔧 Test minimal init compatibility
+      run: |
+        git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
+        
+        # Test with different minimal init paths
+        nvim --headless -u test/minimal_init.vim -c 'lua print("Init test passed")' -c 'qa!'
+        nvim --headless -u minimal_init.vim -c 'lua print("Root init test passed")' -c 'qa!'
