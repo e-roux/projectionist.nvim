@@ -121,7 +121,10 @@ jobs:
         
     - name: 🔧 Test minimal init compatibility
       run: |
-        git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
+        # Clone plenary if not already present
+        if [ ! -d "lua_modules/plenary" ]; then
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
+        fi
         
         # Test with different minimal init paths
         nvim --headless -u test/minimal_init.vim -c 'lua print("Init test passed")' -c 'qa!'
