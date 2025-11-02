@@ -10,7 +10,7 @@ Projectionist provides granular project configuration using "projections" that e
 - **Modern Neovim integration**: Built with Lua for Neovim 0.11+
 - **Extensive project type support**: Python, Go, Rust, Deno, Make, Zsh, Lua, and more
 - **Flexible configuration**: Support for `.projections.json`, `heuristic.json`, and Lua setup
-- **Comprehensive testing**: 12/12 test coverage ensuring reliability
+- **Comprehensive testing**: Full test coverage ensuring reliability
 
 ## Installation
 
