@@ -103,7 +103,7 @@ local function query_objects(key, file)
 		end
 	end
 
-	-- Sort by pattern specificity 
+	-- Sort by pattern specificity
 	return utils.sort_by_specificity(results)
 end
 
@@ -445,7 +445,7 @@ end
 --- @param cmd string: Edit command
 M.edit_file = function(file, cmd)
 	cmd = cmd or "edit"
-	
+
 	-- Create directory if it doesn't exist
 	local dir = vim.fs.dirname(file)
 	if not utils.path_exists(dir, true) then
@@ -502,7 +502,7 @@ end
 --- @param file string: File path
 M.setup_buffer_settings = function(file)
 	file = utils.get_current_file(file)
-	
+
 	-- Set buffer variables for type and alternate
 	local file_type = M.get_file_type(file)
 	if file_type then
@@ -534,7 +534,7 @@ M.setup_buffer_settings = function(file)
 			local path = patterns.expand_placeholders(attrs.path, captures)
 			vim.opt_local.path:append(path)
 		end
-		
+
 		if attrs.suffixesadd then
 			local suffixes = attrs.suffixesadd
 			if type(suffixes) == "table" then

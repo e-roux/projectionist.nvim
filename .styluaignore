@@ -1,0 +1,4 @@
+# Exclude test dependencies and template files that have parsing issues
+lua/plenary/**/*.lua
+lua_modules/**/*.lua
+test/lua_modules/**/*.lua
