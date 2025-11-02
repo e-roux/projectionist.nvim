@@ -20,8 +20,9 @@ jobs:
       uses: actions/checkout@v4
       
     - name: ⚡ Install Neovim
-      uses: MeanderingProgrammer/setup-neovim@v1
+      uses: rhysd/action-setup-vim@v1
       with:
+        neovim: true
         version: ${{ matrix.neovim-version }}
         
     - name: 📚 Install test dependencies
@@ -80,11 +81,14 @@ jobs:
         test -f doc/projectionist.txt
         test -f LICENSE
         
-    - name: ✅ Validate help tags
-      uses: MeanderingProgrammer/setup-neovim@v1
+    - name: ⚡ Install Neovim for help validation
+      uses: rhysd/action-setup-vim@v1
       with:
+        neovim: true
         version: stable
-    - run: |
+        
+    - name: ✅ Validate help tags
+      run: |
         nvim --headless -c "helptags doc/" -c "qa!"
         test -f doc/tags
 
@@ -97,8 +101,9 @@ jobs:
       uses: actions/checkout@v4
       
     - name: ⚡ Install Neovim
-      uses: MeanderingProgrammer/setup-neovim@v1
+      uses: rhysd/action-setup-vim@v1
       with:
+        neovim: true
         version: stable
         
     - name: 🌐 Test cross-shell compatibility
