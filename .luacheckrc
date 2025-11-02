@@ -6,6 +6,12 @@ std = "luajit"
 -- Global variables specific to Neovim
 globals = {
   "vim",
+  "describe",
+  "it",
+  "before_each",
+  "after_each",
+  "setup",
+  "teardown",
 }
 
 -- Only check our source code, not dependencies
@@ -18,6 +24,7 @@ include_files = {
 exclude_files = {
   "lua/plenary/**",
   "lua_modules/**",
+  "test/lua_modules/**",
 }
 
 -- Allow unused function arguments (common in callbacks)
@@ -28,3 +35,8 @@ max_line_length = 120
 
 -- Allow shadowing upvalues (common in nested functions)
 allow_defined_top = true
+
+-- Ignore warnings about unused variables in test files (e.g., embedded JSON library)
+files["test/**/*.lua"] = {
+  ignore = {"213", "431", "432"},  -- unused variables, shadowing upvalue, shadowing definition
+}

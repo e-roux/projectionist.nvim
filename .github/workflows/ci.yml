@@ -63,7 +63,7 @@ jobs:
         
     - name: 🔍 Run luacheck
       run: |
-        luacheck lua/ test/ --globals vim --std luajit
+        luacheck .
 
   docs:
     name: 📖 Documentation
