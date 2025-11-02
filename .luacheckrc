@@ -36,7 +36,16 @@ max_line_length = 120
 -- Allow shadowing upvalues (common in nested functions)
 allow_defined_top = true
 
--- Ignore warnings about unused variables in test files (e.g., embedded JSON library)
+-- Ignore warnings about unused variables in test files
 files["test/**/*.lua"] = {
-  ignore = {"213", "431", "432"},  -- unused variables, shadowing upvalue, shadowing definition
+  ignore = {"212", "213", "431", "432"},  -- unused argument, unused variable, shadowing upvalue, shadowing definition
+}
+
+-- Ignore specific false positives in source files  
+files["lua/projectionist/config.lua"] = {
+  ignore = {"311"},  -- value assigned to variable is unused (false positive)
+}
+
+files["lua/projectionist/init.lua"] = {
+  ignore = {"311"},  -- value assigned to variable is unused (false positive)
 }

@@ -305,16 +305,6 @@ local function read_json(path)
 	return json.decode(content)
 end
 
-local function read_json(path)
-	local file = io.open(path, "r")
-	if not file then
-		error("Could not open " .. path)
-	end
-	local content = file:read("*a")
-	file:close()
-	return json.decode(content)
-end
-
 local heuristic_path = os.getenv("PWD") .. "/test/heuristic.json"
 local heuristics = read_json(heuristic_path)
 projectionist.setup({ patterns = heuristics })

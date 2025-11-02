@@ -93,11 +93,11 @@ M.expand_placeholders = function(template, captures)
 		end,
 		["{camelcase}"] = function()
 			local parts = vim.split(last_capture, "[/_-]")
-			local result = parts[1] or ""
+			local camel_result = parts[1] or ""
 			for i = 2, #parts do
-				result = result .. (parts[i]:sub(1, 1):upper() .. parts[i]:sub(2))
+				camel_result = camel_result .. (parts[i]:sub(1, 1):upper() .. parts[i]:sub(2))
 			end
-			return result
+			return camel_result
 		end,
 		["{snakecase}"] = function()
 			return last_capture:gsub("([a-z])([A-Z])", "%1_%2"):lower():gsub("/", "_")
