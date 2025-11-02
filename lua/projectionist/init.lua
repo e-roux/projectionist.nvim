@@ -2,376 +2,24 @@
 --- Modern Lua port of vim-projectionist for Neovim
 local M = {}
 
--- Internal state
-M._config = {}
-M._projections = {}
-M._roots = {}
+-- Import modules
+local utils = require("projectionist.utils")
+local patterns = require("projectionist.patterns")
+local config = require("projectionist.config")
 
---- Utility functions
-local function starts_with(str, prefix)
-	return str:sub(1, #prefix) == prefix
-end
+-- Expose internal state and functions from config module for compatibility
+M._config = config._config
+M._projections = config._projections
+M._roots = config._roots
+M.get_project_root = config.get_project_root
+M.get_relative_path = config.get_relative_path
+M.has_requirements = config.has_requirements
+M.get_projections = config.get_projections
 
-local function ends_with(str, suffix)
-	return str:sub(-#suffix) == suffix
-end
-
-local function path_join(...)
-	local parts = { ... }
-	local result = table.concat(parts, "/")
-	return result:gsub("//+", "/")
-end
-
-local function is_absolute(path)
-	return path:match("^/") or path:match("^%a:")
-end
-
---- Convert vim glob pattern to lua pattern with capture groups
---- @param pattern string: Vim glob pattern
---- @return string: Lua pattern with captures
---- @return number: Number of capture groups
-local function glob_to_pattern(pattern)
-	local capture_count = 0
-	local lua_pattern = pattern
-		:gsub("%%", "%%%%")
-		:gsub("%.", "%%.")
-		:gsub("%+", "%%+")
-		:gsub("%-", "%%-")
-		:gsub("%^", "%%^")
-		:gsub("%$", "%%$")
-		:gsub("%(", "%%(")
-		:gsub("%)", "%%)")
-		:gsub("%[", "%%[")
-		:gsub("%]", "%%]")
-
-	-- Handle ** before * to avoid double replacement
-	lua_pattern = lua_pattern:gsub("%*%*", function()
-		capture_count = capture_count + 1
-		return "([^%z]*)" -- Match any path including /
-	end)
-
-	lua_pattern = lua_pattern:gsub("%*", function()
-		capture_count = capture_count + 1
-		return "([^/]*)" -- Match single path segment
-	end)
-
-	return "^" .. lua_pattern .. "$", capture_count
-end
-
---- Apply placeholder expansions to template string
---- @param template string: Template with placeholders
---- @param captures table: Captured values from pattern matching
---- @return string: Expanded template
-local function expand_placeholders(template, captures)
-	if not template or not captures then
-		return template or ""
-	end
-
-	local result = template
-	local capture_idx = 1
-
-	-- Replace {} with sequential captures
-	result = result:gsub("{}", function()
-		local value = captures[capture_idx] or ""
-		capture_idx = capture_idx + 1
-		return value
-	end)
-
-	-- Get the last capture for basename/dirname operations
-	local last_capture = captures[#captures] or ""
-
-	-- Handle special placeholders
-	local expansions = {
-		["{basename}"] = function()
-			return last_capture:match("([^/]*)$") or ""
-		end,
-		["{dirname}"] = function()
-			local dirname = last_capture:match("^(.*)/[^/]*$")
-			if dirname then
-				return dirname
-			else
-				-- If no directory separator, dirname is the same as basename for compatibility
-				return last_capture:match("([^/]*)$") or ""
-			end
-		end,
-		["{dot}"] = function()
-			return last_capture:gsub("/", ".")
-		end,
-		["{underscore}"] = function()
-			return last_capture:gsub("/", "_")
-		end,
-		["{backslash}"] = function()
-			return last_capture:gsub("/", "\\")
-		end,
-		["{colons}"] = function()
-			return last_capture:gsub("/", "::")
-		end,
-		["{hyphenate}"] = function()
-			return last_capture:gsub("_", "-")
-		end,
-		["{blank}"] = function()
-			return last_capture:gsub("[_-]", " ")
-		end,
-		["{uppercase}"] = function()
-			return last_capture:upper()
-		end,
-		["{camelcase}"] = function()
-			local parts = vim.split(last_capture, "[/_-]")
-			local result = parts[1] or ""
-			for i = 2, #parts do
-				result = result .. (parts[i]:sub(1, 1):upper() .. parts[i]:sub(2))
-			end
-			return result
-		end,
-		["{snakecase}"] = function()
-			return last_capture:gsub("([a-z])([A-Z])", "%1_%2"):lower():gsub("/", "_")
-		end,
-		["{capitalize}"] = function()
-			return last_capture:gsub("(%a)([^/]*)", function(first, rest)
-				return first:upper() .. rest
-			end)
-		end,
-		["{singular}"] = function()
-			-- Simple singularization - can be enhanced
-			return last_capture:gsub("s$", "")
-		end,
-		["{plural}"] = function()
-			-- Simple pluralization - can be enhanced
-			return last_capture .. "s"
-		end,
-		["{open}"] = "{",
-		["{close}"] = "}",
-		["{nothing}"] = "",
-		["{vim}"] = last_capture,
-	}
-
-	for placeholder, func in pairs(expansions) do
-		if type(func) == "function" then
-			result = result:gsub(vim.pesc(placeholder), func)
-		else
-			result = result:gsub(vim.pesc(placeholder), func)
-		end
-	end
-
-	return result
-end
-
---- Get project root for a given file
---- @param file string|nil: File path (defaults to current buffer)
---- @return string|nil: Project root directory
-M.get_project_root = function(file)
-	file = file or vim.api.nvim_buf_get_name(0)
-	if file == "" then
-		file = vim.fn.getcwd()
-	end
-
-	local dir = vim.fs.dirname(file)
-
-	-- Check cache first
-	if M._roots[dir] then
-		return M._roots[dir]
-	end
-
-	-- Walk up directories looking for project markers
-	while dir and dir ~= "/" and dir ~= "" do
-		-- Check for .projections.json, heuristic.json
-		for _, marker in ipairs({ ".projections.json", "heuristic.json" }) do
-			local marker_path = path_join(dir, marker)
-			if vim.fn.filereadable(marker_path) == 1 then
-				M._roots[vim.fs.dirname(file)] = dir
-				return dir
-			end
-		end
-
-		-- Check global heuristics
-		local heuristics = M._config.heuristics or M._config.patterns
-		if heuristics then
-			for pattern, _ in pairs(heuristics) do
-				if M.has_requirements(dir, pattern) then
-					M._roots[vim.fs.dirname(file)] = dir
-					return dir
-				end
-			end
-		end
-
-		-- Check default patterns
-		local default_markers = { ".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", "Makefile" }
-		for _, marker in ipairs(default_markers) do
-			local marker_path = path_join(dir, marker)
-			if vim.fn.filereadable(marker_path) == 1 or vim.fn.isdirectory(marker_path) == 1 then
-				M._roots[vim.fs.dirname(file)] = dir
-				return dir
-			end
-		end
-
-		local parent = vim.fs.dirname(dir)
-		if parent == dir then
-			break
-		end
-		dir = parent
-	end
-
-	return nil
-end
-
---- Get relative path from project root
---- @param file string|nil: File path (defaults to current buffer)
---- @return string|nil: Relative path from project root
-M.get_relative_path = function(file)
-	file = file or vim.api.nvim_buf_get_name(0)
-	local root = M.get_project_root(file)
-	if not root or not starts_with(file, root) then
-		return nil
-	end
-
-	return file:sub(#root + 2) -- +2 to skip the trailing slash
-end
-
---- Check if directory has required files/patterns
---- @param dir string: Directory to check
---- @param requirements string: Requirements pattern (e.g. "Gemfile&lib/|*.gemspec")
---- @return boolean: True if requirements are met
-M.has_requirements = function(dir, requirements)
-	if not requirements or requirements == "" then
-		return false
-	end
-
-	-- Split by | (OR conditions)
-	for _, or_group in ipairs(vim.split(requirements, "|")) do
-		local all_met = true
-
-		-- Split by & (AND conditions)
-		for _, requirement in ipairs(vim.split(or_group, "&")) do
-			local negated = starts_with(requirement, "!")
-			local test = negated and requirement:sub(2) or requirement
-			local path = path_join(dir, test)
-
-			local exists = false
-			if test:match("%*") then
-				-- Glob pattern
-				exists = #vim.fn.glob(path) > 0
-			elseif ends_with(test, "/") then
-				-- Directory
-				exists = vim.fn.isdirectory(path) == 1
-			else
-				-- File
-				exists = vim.fn.filereadable(path) == 1
-			end
-
-			if negated then
-				exists = not exists
-			end
-
-			if not exists then
-				all_met = false
-				break
-			end
-		end
-
-		if all_met then
-			return true
-		end
-	end
-
-	return false
-end
-
---- Load projections for a given file
---- @param file string|nil: File path (defaults to current buffer)
---- @return table|nil: Projections configuration
-M.get_projections = function(file)
-	file = file or vim.api.nvim_buf_get_name(0)
-	local root = M.get_project_root(file)
-	if not root then
-		return nil
-	end
-
-	-- Check cache
-	if M._projections and M._projections[root] then
-		return M._projections[root]
-	end
-
-	local projections = {}
-
-	-- 1. Load from .projections.json files (walking up from root)
-	local dir = root
-	while dir and dir ~= "/" do
-		for _, filename in ipairs({ ".projections.json", "heuristic.json" }) do
-			local json_file = path_join(dir, filename)
-			if vim.fn.filereadable(json_file) == 1 then
-				local ok, data = pcall(function()
-					local content = table.concat(vim.fn.readfile(json_file), "\n")
-					return vim.json.decode(content, { luanil = { object = true, array = true } })
-				end)
-				if ok and data and type(data) == "table" then
-					if filename == "heuristic.json" then
-						-- Handle heuristic.json: check requirements and apply matching projections
-						for pattern, heuristic in pairs(data) do
-							if M.has_requirements(root, pattern) then
-								for proj_pattern, attrs in pairs(heuristic) do
-									projections[proj_pattern] = attrs
-								end
-							end
-						end
-					else
-						-- Handle .projections.json: direct mapping
-						for pattern, attrs in pairs(data) do
-							projections[pattern] = attrs
-						end
-					end
-				end
-			end
-		end
-
-		-- Also check test/ subdirectory for test heuristics
-		if dir == root then
-			local test_dir = path_join(dir, "test")
-			for _, filename in ipairs({ "heuristic.json" }) do
-				local json_file = path_join(test_dir, filename)
-				if vim.fn.filereadable(json_file) == 1 then
-					local ok, data = pcall(function()
-						local content = table.concat(vim.fn.readfile(json_file), "\n")
-						return vim.json.decode(content, { luanil = { object = true, array = true } })
-					end)
-					if ok and data and type(data) == "table" then
-						-- Handle heuristic.json: check requirements and apply matching projections
-						for pattern, heuristic in pairs(data) do
-							if M.has_requirements(root, pattern) then
-								for proj_pattern, attrs in pairs(heuristic) do
-									projections[proj_pattern] = attrs
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-
-		local parent = vim.fs.dirname(dir)
-		if parent == dir then
-			break
-		end
-		dir = parent
-	end
-
-	-- 2. Apply global heuristics
-	local heuristics = M._config.heuristics or M._config.patterns
-	if heuristics then
-		for pattern, heuristic in pairs(heuristics) do
-			if M.has_requirements(root, pattern) then
-				for proj_pattern, attrs in pairs(heuristic) do
-					projections[proj_pattern] = attrs
-				end
-			end
-		end
-	end
-
-	-- Cache result
-	M._projections = M._projections or {}
-	M._projections[root] = projections
-
-	return projections
-end
+-- Set up config to use main module's get_project_root (for test overrides)
+config.set_external_root_resolver(function(file)
+	return M.get_project_root(file)
+end)
 
 --- Core query functions matching vim-projectionist API
 --- Query raw projection data for a given key and file
@@ -379,7 +27,7 @@ end
 --- @param file string|nil: The file path (defaults to current buffer)
 --- @return table: List of matching projection values (may be empty)
 M.query_raw = function(key, file)
-	file = file or vim.api.nvim_buf_get_name(0)
+	file = utils.get_current_file(file)
 	local projections = M.get_projections(file)
 	if not projections then
 		return {}
@@ -394,7 +42,7 @@ M.query_raw = function(key, file)
 
 	-- Find matching patterns and collect results
 	for pattern, attrs in pairs(projections) do
-		local lua_pattern, capture_count = glob_to_pattern(pattern)
+		local lua_pattern, capture_count = patterns.glob_to_pattern(pattern)
 		local captures = { relative_path:match(lua_pattern) }
 
 		-- Check if pattern matched: either captures > 0 or (no wildcards and exact match)
@@ -416,23 +64,9 @@ M.query_raw = function(key, file)
 		end
 	end
 
-	-- Sort by pattern specificity (fewer wildcards = more specific)
-	table.sort(results, function(a, b)
-		local a_wildcards = select(2, a.pattern:gsub("%*", ""))
-		local b_wildcards = select(2, b.pattern:gsub("%*", ""))
-		if a_wildcards ~= b_wildcards then
-			return a_wildcards < b_wildcards
-		end
-		return #a.pattern > #b.pattern
-	end)
-
-	-- Extract just the values for the final result
-	local values = {}
-	for _, match in ipairs(results) do
-		table.insert(values, match.value)
-	end
-
-	return values
+	-- Sort by pattern specificity and extract values
+	results = utils.sort_by_specificity(results)
+	return utils.extract_values(results)
 end
 
 --- Internal function to get query objects with full details
@@ -440,7 +74,7 @@ end
 --- @param file string|nil: The file path
 --- @return table: List of match objects with value, captures, pattern, attrs
 local function query_objects(key, file)
-	file = file or vim.api.nvim_buf_get_name(0)
+	file = utils.get_current_file(file)
 	local projections = M.get_projections(file)
 	if not projections then
 		return {}
@@ -455,7 +89,7 @@ local function query_objects(key, file)
 
 	-- Find matching patterns and collect results
 	for pattern, attrs in pairs(projections) do
-		local lua_pattern, capture_count = glob_to_pattern(pattern)
+		local lua_pattern, capture_count = patterns.glob_to_pattern(pattern)
 		local captures = { relative_path:match(lua_pattern) }
 
 		if #captures == capture_count and attrs[key] ~= nil then
@@ -469,22 +103,13 @@ local function query_objects(key, file)
 		end
 	end
 
-	-- Sort by pattern specificity (fewer wildcards = more specific)
-	table.sort(results, function(a, b)
-		local a_wildcards = select(2, a.pattern:gsub("%*", ""))
-		local b_wildcards = select(2, b.pattern:gsub("%*", ""))
-		if a_wildcards ~= b_wildcards then
-			return a_wildcards < b_wildcards
-		end
-		return #a.pattern > #b.pattern
-	end)
-
-	return results
+	-- Sort by pattern specificity 
+	return utils.sort_by_specificity(results)
 end
 
 --- Query with placeholder expansion
 --- @param key string: The projection key
---- @param expansions table|nil: Optional expansions override
+--- @param expansions table|nil: Optional expansions override (unused but kept for compatibility)
 --- @param file string|nil: The file path
 --- @return table: List of expanded values
 M.query = function(key, expansions, file)
@@ -497,10 +122,10 @@ M.query = function(key, expansions, file)
 
 		if type(value) == "table" then
 			for _, v in ipairs(value) do
-				table.insert(results, expand_placeholders(v, captures))
+				table.insert(results, patterns.expand_placeholders(v, captures))
 			end
 		else
-			table.insert(results, expand_placeholders(value, captures))
+			table.insert(results, patterns.expand_placeholders(value, captures))
 		end
 	end
 
@@ -573,7 +198,7 @@ end
 --- @param file string|nil: File path (defaults to current buffer)
 --- @return boolean: True if template was applied
 M.apply_template = function(file)
-	file = file or vim.api.nvim_buf_get_name(0)
+	file = utils.get_current_file(file)
 	local template = M.get_template(file)
 
 	if not template then
@@ -610,232 +235,230 @@ end
 ---   - autocmds: Whether to register autocmds (default: true)
 M.setup = function(opts)
 	opts = opts or {}
-	assert(type(opts) == "table", "projectionist.setup: opts must be a table")
 
-	M._config = opts
-	M._projections = {}
-	M._roots = {}
+	-- Store configuration with backwards compatibility
+	config.set_config(opts)
 
-	-- Register commands unless explicitly disabled
+	-- Register commands and autocmds
 	if opts.commands ~= false then
 		M.setup_commands()
 	end
 
-	-- Register autocmds unless explicitly disabled
 	if opts.autocmds ~= false then
 		M.setup_autocmds()
 	end
 end
 
---- Register all projectionist commands
+--- Setup vim commands
 M.setup_commands = function()
-	-- Core navigation commands
-	vim.api.nvim_create_user_command("A", function(cmd)
-		M.cmd_alternate(cmd.args, "edit")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("A", function(args)
+		M.cmd_alternate(args, "edit")
+	end, {
+		nargs = "*",
+		complete = M.complete_projections,
+		desc = "Edit alternate file",
+	})
 
-	vim.api.nvim_create_user_command("AS", function(cmd)
-		M.cmd_alternate(cmd.args, "split")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("AS", function(args)
+		M.cmd_alternate(args, "split")
+	end, {
+		nargs = "*",
+		complete = M.complete_projections,
+		desc = "Split alternate file",
+	})
 
-	vim.api.nvim_create_user_command("AV", function(cmd)
-		M.cmd_alternate(cmd.args, "vsplit")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("AV", function(args)
+		M.cmd_alternate(args, "vsplit")
+	end, {
+		nargs = "*",
+		complete = M.complete_projections,
+		desc = "Vertical split alternate file",
+	})
 
-	vim.api.nvim_create_user_command("AT", function(cmd)
-		M.cmd_alternate(cmd.args, "tabedit")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("AT", function(args)
+		M.cmd_alternate(args, "tabedit")
+	end, {
+		nargs = "*",
+		complete = M.complete_projections,
+		desc = "Tab alternate file",
+	})
 
-	vim.api.nvim_create_user_command("AD", function(cmd)
-		M.cmd_alternate(cmd.args, "read")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("Cd", function(args)
+		M.cmd_cd(args, "cd")
+	end, {
+		nargs = 0,
+		desc = "Change to project root",
+	})
 
-	vim.api.nvim_create_user_command("AO", function(cmd)
-		M.cmd_alternate(cmd.args, "drop")
-	end, { nargs = "?", complete = M.complete_projections })
+	vim.api.nvim_create_user_command("Lcd", function(args)
+		M.cmd_cd(args, "lcd")
+	end, {
+		nargs = 0,
+		desc = "Change to project root (local)",
+	})
 
-	-- Directory commands
-	vim.api.nvim_create_user_command("Pcd", function(cmd)
-		M.cmd_cd(cmd.args, "cd")
-	end, { nargs = "?", complete = "dir" })
+	vim.api.nvim_create_user_command("ProjectDo", function(args)
+		M.cmd_project_do(args)
+	end, {
+		nargs = "+",
+		desc = "Execute command in project root",
+	})
 
-	vim.api.nvim_create_user_command("Plcd", function(cmd)
-		M.cmd_cd(cmd.args, "lcd")
-	end, { nargs = "?", complete = "dir" })
-
-	vim.api.nvim_create_user_command("Ptcd", function(cmd)
-		M.cmd_cd(cmd.args, "tcd")
-	end, { nargs = "?", complete = "dir" })
-
-	-- Aliases if not already defined
-	if vim.fn.exists(":Cd") == 0 then
-		vim.api.nvim_create_user_command("Cd", function(cmd)
-			M.cmd_cd(cmd.args, "cd")
-		end, { nargs = "?", complete = "dir" })
-	end
-
-	if vim.fn.exists(":Lcd") == 0 then
-		vim.api.nvim_create_user_command("Lcd", function(cmd)
-			M.cmd_cd(cmd.args, "lcd")
-		end, { nargs = "?", complete = "dir" })
-	end
-
-	if vim.fn.exists(":Tcd") == 0 then
-		vim.api.nvim_create_user_command("Tcd", function(cmd)
-			M.cmd_cd(cmd.args, "tcd")
-		end, { nargs = "?", complete = "dir" })
-	end
-
-	-- Project commands
-	vim.api.nvim_create_user_command("ProjectDo", function(cmd)
-		M.cmd_project_do(cmd.args)
-	end, { nargs = "+", complete = "shellcmd" })
-
-	vim.api.nvim_create_user_command("Console", function(cmd)
-		M.cmd_console(cmd.args)
-	end, { nargs = "*" })
+	vim.api.nvim_create_user_command("Console", function(args)
+		M.cmd_console(args)
+	end, {
+		nargs = 0,
+		desc = "Open project console",
+	})
 end
 
---- Setup autocmds for automatic project detection
+--- Setup autocmds for file detection and template application
 M.setup_autocmds = function()
-	local group = vim.api.nvim_create_augroup("Projectionist", { clear = true })
+	local group = vim.api.nvim_create_augroup("projectionist", { clear = true })
 
-	-- Detect projects on file events
-	vim.api.nvim_create_autocmd({ "BufNewFile", "BufReadPost" }, {
+	-- Detect projectionist files
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
 		group = group,
-		callback = function()
-			M.detect()
+		callback = function(ev)
+			M.detect(ev.file)
 		end,
+		desc = "Detect projectionist files",
 	})
 
 	-- Apply templates to new files
 	vim.api.nvim_create_autocmd("BufNewFile", {
 		group = group,
-		callback = function()
-			if M.get_projections() then
-				M.apply_template()
+		callback = function(ev)
+			if utils.path_exists(ev.file) then
+				return
 			end
+			-- Small delay to ensure buffer is properly initialized
+			vim.defer_fn(function()
+				M.apply_template(ev.file)
+			end, 1)
 		end,
+		desc = "Apply projectionist templates",
 	})
 
-	-- Reload on .projections.json changes
-	vim.api.nvim_create_autocmd("BufWritePost", {
+	-- Clear cache when projection files change
+	vim.api.nvim_create_autocmd({ "BufWritePost" }, {
 		group = group,
-		pattern = ".projections.json",
+		pattern = { ".projections.json", "heuristic.json" },
 		callback = function()
 			M.invalidate_cache()
-			M.detect()
 		end,
+		desc = "Invalidate projectionist cache",
 	})
 end
 
 --- Command implementations
 
---- Execute alternate command
---- @param args string: Command arguments
+--- Alternate file command handler
+--- @param args table: Command arguments
 --- @param cmd string: Edit command (edit, split, vsplit, etc.)
 M.cmd_alternate = function(args, cmd)
-	if args and args ~= "" then
-		-- Navigate to specific file pattern
-		local files = M.query_file("*", nil, nil) -- Get all projections
-		local matching = {}
+	local arg = args.args and args.args ~= "" and args.args or nil
+	local file = utils.get_current_file()
 
-		for _, file in ipairs(files) do
-			if file:match(args) then
-				table.insert(matching, file)
-			end
-		end
-
-		if #matching > 0 then
-			local file = matching[1]
-			M.edit_file(file, cmd)
-		else
-			vim.notify("No matches for: " .. args, vim.log.levels.WARN)
+	if arg then
+		-- Use provided argument as alternate
+		local root = M.get_project_root(file)
+		if root then
+			local full_path = utils.path_join(root, arg)
+			M.edit_file(full_path, cmd)
 		end
 	else
-		-- Use alternate file
-		local alt = M.get_alternate_file()
-		if alt then
-			M.edit_file(alt, cmd)
+		-- Find alternate
+		local alternate = M.get_alternate_file(file)
+		if alternate then
+			local root = M.get_project_root(file)
+			if root then
+				local full_path = utils.path_join(root, alternate)
+				M.edit_file(full_path, cmd)
+			end
 		else
 			vim.notify("No alternate file found", vim.log.levels.WARN)
 		end
 	end
 end
 
---- Change to project directory
---- @param args string: Optional subdirectory
---- @param cmd string: cd command (cd, lcd, tcd)
+--- Change directory command handler
+--- @param args table: Command arguments
+--- @param cmd string: cd or lcd
 M.cmd_cd = function(args, cmd)
 	local root = M.get_project_root()
-	if not root then
-		vim.notify("Not in a project", vim.log.levels.WARN)
-		return
+	if root then
+		vim.cmd(cmd .. " " .. vim.fn.fnameescape(root))
+		vim.notify("Changed to " .. root)
+	else
+		vim.notify("No project root found", vim.log.levels.WARN)
 	end
-
-	local target = root
-	if args and args ~= "" then
-		target = path_join(root, args)
-	end
-
-	vim.cmd(cmd .. " " .. vim.fn.fnameescape(target))
 end
 
---- Execute command in project root
---- @param args string: Command to execute
+--- Project do command handler
+--- @param args table: Command arguments with command to execute
 M.cmd_project_do = function(args)
 	local root = M.get_project_root()
 	if not root then
-		vim.notify("Not in a project", vim.log.levels.WARN)
+		vim.notify("No project root found", vim.log.levels.WARN)
 		return
 	end
 
+	local cmd = args.args
+	if not cmd or cmd == "" then
+		vim.notify("No command provided", vim.log.levels.WARN)
+		return
+	end
+
+	-- Save current directory and change to project root
 	local cwd = vim.fn.getcwd()
-	vim.cmd("cd " .. vim.fn.fnameescape(root))
+	vim.cmd("lcd " .. vim.fn.fnameescape(root))
 
-	local ok, result = pcall(vim.cmd, args)
+	-- Execute command
+	vim.cmd(cmd)
 
-	vim.cmd("cd " .. vim.fn.fnameescape(cwd))
-
-	if not ok then
-		vim.notify("Command failed: " .. result, vim.log.levels.ERROR)
-	end
+	-- Restore directory
+	vim.cmd("lcd " .. vim.fn.fnameescape(cwd))
 end
 
---- Start console/REPL
---- @param args string: Optional arguments
+--- Console command handler
+--- @param args table: Command arguments
 M.cmd_console = function(args)
-	local console_cmd = M.query_scalar("console")
-	if not console_cmd then
-		vim.notify("No console command defined", vim.log.levels.WARN)
-		return
+	local console = M.query_scalar("console")
+	if console then
+		-- Execute the console command
+		vim.cmd(console)
+	else
+		-- Fall back to shell in project root
+		local root = M.get_project_root()
+		if root then
+			vim.cmd("lcd " .. vim.fn.fnameescape(root))
+			vim.cmd("terminal")
+		else
+			vim.notify("No project root found", vim.log.levels.WARN)
+		end
 	end
-
-	local cmd = console_cmd
-	if args and args ~= "" then
-		cmd = cmd .. " " .. args
-	end
-
-	vim.cmd("terminal " .. cmd)
 end
 
---- Utility functions
-
---- Edit file with given command
+--- Edit file with specified command
 --- @param file string: File path
 --- @param cmd string: Edit command
 M.edit_file = function(file, cmd)
-	if cmd == "read" then
-		vim.cmd("read " .. vim.fn.fnameescape(file))
-	else
-		vim.cmd(cmd .. " " .. vim.fn.fnameescape(file))
+	cmd = cmd or "edit"
+	
+	-- Create directory if it doesn't exist
+	local dir = vim.fs.dirname(file)
+	if not utils.path_exists(dir, true) then
+		vim.fn.mkdir(dir, "p")
 	end
+
+	vim.cmd(cmd .. " " .. vim.fn.fnameescape(file))
 end
 
---- Complete function for projections
---- @param arg_lead string: Current argument
---- @param cmd_line string: Full command line
---- @param cursor_pos number: Cursor position
+--- Complete projections for commands
+--- @param arg_lead string: Current argument (unused but kept for compatibility)
+--- @param cmd_line string: Full command line (unused but kept for compatibility)
+--- @param cursor_pos number: Cursor position (unused but kept for compatibility)
 --- @return table: Completion candidates
 M.complete_projections = function(arg_lead, cmd_line, cursor_pos)
 	local projections = M.get_projections()
@@ -844,115 +467,113 @@ M.complete_projections = function(arg_lead, cmd_line, cursor_pos)
 	end
 
 	local candidates = {}
-	for pattern, attrs in pairs(projections) do
-		if pattern:match(vim.pesc(arg_lead)) then
-			table.insert(candidates, pattern)
+	for pattern, _ in pairs(projections) do
+		-- Convert glob pattern to example paths
+		local example = pattern:gsub("%*%*", "path"):gsub("%*", "file")
+		if utils.starts_with(example, arg_lead) then
+			table.insert(candidates, example)
 		end
 	end
 
 	return candidates
 end
 
---- Detect and activate projections for current buffer
-M.detect = function(file)
-	file = file or vim.api.nvim_buf_get_name(0)
-	if file == "" then
-		return
-	end
+--- File detection and activation
 
+--- Detect and activate projectionist for file
+--- @param file string|nil: File path
+M.detect = function(file)
+	file = utils.get_current_file(file)
 	local projections = M.get_projections(file)
 	if projections then
 		M.activate(projections, file)
 	end
 end
 
---- Activate projections for buffer
+--- Activate projectionist features for current file
 --- @param projections table: Projections configuration
 --- @param file string: File path
 M.activate = function(projections, file)
-	-- Set buffer variables for compatibility
-	vim.b.projectionist = projections
-	vim.b.projectionist_file = file
-
-	-- Set up buffer-local settings
+	file = utils.get_current_file(file)
 	M.setup_buffer_settings(file)
 end
 
---- Setup buffer-local settings
+--- Setup buffer-specific settings based on projections
 --- @param file string: File path
 M.setup_buffer_settings = function(file)
-	local root = M.get_project_root(file)
-	if not root then
-		return
+	file = utils.get_current_file(file)
+	
+	-- Set buffer variables for type and alternate
+	local file_type = M.get_file_type(file)
+	if file_type then
+		vim.b.projectionist_type = file_type
 	end
 
-	-- Set workspace folder
-	vim.b.workspace_folder = root
-
-	-- Set up tags if needed
-	local tags_file = path_join(root, "tags")
-	if vim.fn.filereadable(tags_file) == 1 then
-		vim.bo.tags = tags_file
+	local alternate = M.get_alternate_file(file)
+	if alternate then
+		vim.b.projectionist_alternate = alternate
 	end
 
-	-- Set up path
-	local path_dirs = M.query("path", nil, file)
-	if #path_dirs > 0 then
-		local paths = {}
-		for _, dir in ipairs(path_dirs) do
-			if not is_absolute(dir) then
-				dir = path_join(root, dir)
-			end
-			table.insert(paths, dir)
+	-- Set up any projection-specific settings
+	local raw_results = query_objects("*", file)
+	for _, result in ipairs(raw_results) do
+		local attrs = result.attrs
+		local captures = result.captures
+
+		-- Apply buffer settings
+		if attrs.makeprg then
+			local makeprg = patterns.expand_placeholders(attrs.makeprg, captures)
+			vim.bo.makeprg = makeprg
 		end
-		vim.bo.path = vim.bo.path .. "," .. table.concat(paths, ",")
-	end
 
-	-- Set up make command
-	local make_cmd = M.query_scalar("make", nil, file)
-	if make_cmd then
-		vim.bo.makeprg = make_cmd
-	end
+		if attrs.compiler then
+			vim.cmd("compiler " .. attrs.compiler)
+		end
 
-	-- Set dispatch commands
-	local dispatch_cmd = M.query_scalar("dispatch", nil, file)
-	if dispatch_cmd then
-		vim.b.dispatch = dispatch_cmd
-	end
-
-	local start_cmd = M.query_scalar("start", nil, file)
-	if start_cmd then
-		vim.b.start = start_cmd
+		if attrs.path then
+			local path = patterns.expand_placeholders(attrs.path, captures)
+			vim.opt_local.path:append(path)
+		end
+		
+		if attrs.suffixesadd then
+			local suffixes = attrs.suffixesadd
+			if type(suffixes) == "table" then
+				for _, suffix in ipairs(suffixes) do
+					vim.opt_local.suffixesadd:append(suffix)
+				end
+			else
+				vim.opt_local.suffixesadd:append(suffixes)
+			end
+		end
 	end
 end
 
 --- Cache management
 
---- Invalidate all caches
+--- Invalidate projectionist cache
 M.invalidate_cache = function()
-	M._projections = {}
-	M._roots = {}
+	config.clear_cache()
 end
 
---- Compatibility layer
+--- Compatibility functions for vim-projectionist
 
---- Legacy function for compatibility
---- @param key string: Projection key
+--- Get heuristic value (compatibility)
+--- @param key string: Heuristic key
 --- @param file string|nil: File path
---- @return table: Results
+--- @return any: Heuristic value
 M.heuristic = function(key, file)
 	return M.query_raw(key, file)
 end
 
---- Get config (for backward compatibility)
+--- Get configuration (compatibility)
 --- @return table: Current configuration
 M.get_config = function()
 	return M._config
 end
 
---- Legacy function for compatibility
+--- Get heuristics for file (compatibility)
 --- @param file string|nil: File path
---- @return table|nil: Heuristics
+--- @return table: Active heuristics
 M.get_heuristics = function(file)
 	return M.get_projections(file)
 end
