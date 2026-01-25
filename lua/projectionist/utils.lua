@@ -15,6 +15,9 @@ end
 --- @param suffix string: Suffix to match
 --- @return boolean: True if str ends with suffix
 M.ends_with = function(str, suffix)
+	if suffix == "" then
+		return true
+	end
 	return str:sub(-#suffix) == suffix
 end
 
@@ -41,6 +44,11 @@ M.get_current_file = function(file)
 	file = file or vim.api.nvim_buf_get_name(0)
 	if file == "" then
 		file = vim.fn.getcwd()
+	end
+	-- If a relative path was provided, resolve it against cwd
+	if file and not M.is_absolute(file) then
+		local cwd = vim.fn.getcwd()
+		file = M.path_join(cwd, file)
 	end
 	return file
 end
@@ -105,12 +113,29 @@ M.read_json = function(path)
 	return nil
 end
 
---- Check glob pattern
---- @param pattern string: Glob pattern
---- @param path string: Full path to test
---- @return boolean: True if pattern matches
+--- Check glob pattern (Tim Pope compatible)
+--- @param pattern string: Glob pattern (unused, kept for signature compatibility)
+--- @param path string: Full path including glob pattern to test
+--- @return boolean: True if pattern matches at least one file
 M.glob_match = function(pattern, path)
-	return #vim.fn.glob(pattern) > 0
+	-- Use vim.fn.glob to check for matches.
+	-- Tim Pope uses: !empty(glob(escape(root, '[?*') . relative))
+	local ok, glob_result = pcall(vim.fn.glob, path, false, true)
+	if not ok or not glob_result then
+		return false
+	end
+	return #glob_result > 0
+end
+
+--- Get list of files matching glob pattern
+--- @param path string: Full path including glob pattern to test
+--- @return table: List of matching paths
+M.glob_list = function(path)
+	local ok, glob_result = pcall(vim.fn.glob, path, false, true)
+	if not ok or not glob_result then
+		return {}
+	end
+	return glob_result
 end
 
 return M

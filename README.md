@@ -1,6 +1,10 @@
 # projectionist.nvim
 
-A modern Lua port of [vim-projectionist](https://github.com/tpope/vim-projectionist) for Neovim.
+
+> [!NOTE]
+> This project is a port of Tim Pope's [vim-projectionist] and all credits to him.
+
+A modern Lua port of [vim-projectionist] for Neovim.
 
 Projectionist provides granular project configuration using "projections" that enable seamless navigation between related files in your projects.
 
@@ -16,11 +20,108 @@ Projectionist provides granular project configuration using "projections" that e
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
+#### Basic Installation
+
 ```lua
 {
   'e-roux/projectionist.nvim',
   config = function()
     require('projectionist').setup()
+  end,
+}
+```
+
+#### With Custom Patterns
+
+```lua
+{
+  'e-roux/projectionist.nvim',
+  config = function()
+    require('projectionist').setup({
+      patterns = {
+        -- Universal patterns (apply to all projects)
+        ["*"] = {
+          ["Makefile"] = {
+            type = "makefile",
+            console = "zsh",
+            dispatch = "Make",
+          },
+        },
+        
+        -- Python projects
+        ["pyproject.toml"] = {
+          ["*"] = {
+            start = "uv sync",
+            console = "python",
+          },
+          ["app/*.py"] = {
+            type = "source",
+            alternate = "test/{}_test.py",
+            dispatch = "pytest",
+          },
+          ["test/*_test.py"] = {
+            type = "test",
+            alternate = "app/{}.py",
+          },
+        },
+        
+        -- Go projects
+        ["go.mod"] = {
+          ["*.go"] = {
+            type = "source",
+            alternate = "{}_test.go",
+          },
+          ["*_test.go"] = {
+            type = "test",
+            alternate = "{}.go",
+          },
+        },
+        
+        -- Rust projects
+        ["cargo.toml"] = {
+          ["*.rs"] = {
+            type = "source",
+            alternate = "{}.rs",
+          },
+        },
+        
+        -- TypeScript/Deno projects
+        ["deno.json"] = {
+          ["src/*.ts"] = {
+            type = "source",
+            alternate = "test/{}_test.ts",
+          },
+          ["test/*_test.ts"] = {
+            type = "test",
+            alternate = "src/{}.ts",
+          },
+        },
+        
+        -- Node.js/React projects
+        ["package.json"] = {
+          ["src/*.tsx"] = {
+            type = "source",
+            alternate = "test/{}.test.tsx",
+          },
+          ["test/*.test.tsx"] = {
+            type = "test",
+            alternate = "src/{}.tsx",
+          },
+        },
+        
+        -- Neovim plugins (parent directory matching *.nvim)
+        ["../*.nvim/lua/"] = {
+          ["lua/*.lua"] = {
+            type = "source",
+            alternate = "test/{}_spec.lua",
+          },
+          ["test/*_spec.lua"] = {
+            type = "test",
+            alternate = "lua/{}.lua",
+          },
+        },
+      },
+    })
   end,
 }
 ```
@@ -105,16 +206,29 @@ Now you can:
 
 ```lua
 require('projectionist').setup({
-  -- Custom heuristics (optional)
-  heuristics = {
-    ["src/*.rs"] = {
-      type = "source",
-      alternate = "tests/{}.rs"
+  -- Custom patterns/heuristics (optional)
+  -- Patterns define project-specific file relationships
+  patterns = {
+    -- Universal pattern matching all projects with a Makefile
+    ["*"] = {
+      ["Makefile"] = {
+        type = "makefile",
+        console = "zsh",
+        dispatch = "Make",
+      },
     },
-    ["tests/*.rs"] = {
-      type = "test",
-      alternate = "src/{}.rs"
-    }
+    
+    -- Patterns for Rust projects (requires cargo.toml in project root)
+    ["cargo.toml"] = {
+      ["src/*.rs"] = {
+        type = "source",
+        alternate = "tests/{}.rs"
+      },
+      ["tests/*.rs"] = {
+        type = "test",
+        alternate = "src/{}.rs"
+      }
+    },
   },
   
   -- Enable commands (default: true)
@@ -123,6 +237,34 @@ require('projectionist').setup({
   -- Enable debug logging (default: false)
   debug = false
 })
+```
+
+### Pattern Structure
+
+Patterns follow a two-level structure:
+
+1. **Requirement level**: Files/directories that must exist in the project root
+   - `"*"` - Universal (applies to all projects)
+   - `"go.mod"` - Requires go.mod file
+   - `"pyproject.toml"` - Requires pyproject.toml file
+   - `"package.json"` - Requires package.json file
+   - `"../*.nvim/lua/"` - Parent directory matches `*.nvim` and has `lua/` directory
+
+2. **Pattern level**: File patterns within the project
+   - `"*.go"` - All Go files
+   - `"src/*.ts"` - TypeScript files in src/
+   - `"test/*_test.py"` - Python test files
+
+Example:
+```lua
+patterns = {
+  ["go.mod"] = {           -- Requirement: go.mod must exist
+    ["*.go"] = {           -- Pattern: matches all .go files
+      type = "source",
+      alternate = "{}_test.go"
+    }
+  }
+}
 ```
 
 ### Configuration Files
@@ -273,9 +415,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for gu
 
 ## License
 
-Same terms as Vim itself. See `:help license`.
+Same terms as [vim-projectionist] itself.
 
-## Credits
+[vim-projectionist]: https://github.com/tpope/vim-projectionist
 
-- Original [vim-projectionist](https://github.com/tpope/vim-projectionist) by Tim Pope
-- Lua port by [e-roux](https://github.com/e-roux)

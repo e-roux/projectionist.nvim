@@ -2,15 +2,15 @@
 --- Modern Lua port of vim-projectionist for Neovim
 local M = {}
 
+-- Version information for release-please
+M._version = "0.2.0"
+
 -- Import modules
 local utils = require("projectionist.utils")
 local patterns = require("projectionist.patterns")
 local config = require("projectionist.config")
 
 -- Expose internal state and functions from config module for compatibility
-M._config = config._config
-M._projections = config._projections
-M._roots = config._roots
 M.get_project_root = config.get_project_root
 M.get_relative_path = config.get_relative_path
 M.has_requirements = config.has_requirements
@@ -21,58 +21,10 @@ config.set_external_root_resolver(function(file)
 	return M.get_project_root(file)
 end)
 
---- Core query functions matching vim-projectionist API
---- Query raw projection data for a given key and file
---- @param key string: The projection key (e.g. 'type', 'alternate')
---- @param file string|nil: The file path (defaults to current buffer)
---- @return table: List of matching projection values (may be empty)
-M.query_raw = function(key, file)
-	file = utils.get_current_file(file)
-	local projections = M.get_projections(file)
-	if not projections then
-		return {}
-	end
-
-	local relative_path = M.get_relative_path(file)
-	if not relative_path then
-		return {}
-	end
-
-	local results = {}
-
-	-- Find matching patterns and collect results
-	for pattern, attrs in pairs(projections) do
-		local lua_pattern, capture_count = patterns.glob_to_pattern(pattern)
-		local captures = { relative_path:match(lua_pattern) }
-
-		-- Check if pattern matched: either captures > 0 or (no wildcards and exact match)
-		local matched = false
-		if capture_count > 0 then
-			matched = #captures == capture_count
-		else
-			matched = relative_path:match(lua_pattern) ~= nil
-		end
-
-		if matched and attrs[key] ~= nil then
-			-- Store raw result with captures for later expansion
-			table.insert(results, {
-				value = attrs[key],
-				captures = captures,
-				pattern = pattern,
-				attrs = attrs,
-			})
-		end
-	end
-
-	-- Sort by pattern specificity and extract values
-	results = utils.sort_by_specificity(results)
-	return utils.extract_values(results)
-end
-
 --- Internal function to get query objects with full details
 --- @param key string: The projection key
 --- @param file string|nil: The file path
---- @return table: List of match objects with value, captures, pattern, attrs
+--- @return table: List of match objects with value, match, pattern, attrs
 local function query_objects(key, file)
 	file = utils.get_current_file(file)
 	local projections = M.get_projections(file)
@@ -87,24 +39,51 @@ local function query_objects(key, file)
 
 	local results = {}
 
-	-- Find matching patterns and collect results
-	for pattern, attrs in pairs(projections) do
-		local lua_pattern, capture_count = patterns.glob_to_pattern(pattern)
-		local captures = { relative_path:match(lua_pattern) }
+	-- Sort patterns by length descending
+	local patterns_keys = vim.tbl_keys(projections)
+	table.sort(patterns_keys, function(a, b)
+		return #a > #b
+	end)
 
-		if #captures == capture_count and attrs[key] ~= nil then
-			-- Store raw result with captures for later expansion
+	for _, pattern in ipairs(patterns_keys) do
+		local attrs = projections[pattern]
+		local match_val = ""
+		local matched = false
+
+		if pattern == "*" then
+			matched = true
+			match_val = relative_path
+		elseif not pattern:find("%*") then
+			-- Exact match
+			matched = (pattern == relative_path)
+			match_val = pattern
+		else
+			-- Wildcard match using Ported Vim logic
+			match_val = patterns.vim_match(relative_path, pattern)
+			matched = (match_val ~= "")
+		end
+
+		if matched and attrs[key] ~= nil then
 			table.insert(results, {
 				value = attrs[key],
-				captures = captures,
+				match = match_val,
 				pattern = pattern,
 				attrs = attrs,
 			})
 		end
 	end
 
-	-- Sort by pattern specificity
-	return utils.sort_by_specificity(results)
+	return results
+end
+
+--- Core query functions matching vim-projectionist API
+--- Query raw projection data for a given key and file
+--- @param key string: The projection key (e.g. 'type', 'alternate')
+--- @param file string|nil: The file path (defaults to current buffer)
+--- @return table: List of matching projection values (may be empty)
+M.query_raw = function(key, file)
+	local raw_results = query_objects(key, file)
+	return utils.extract_values(raw_results)
 end
 
 --- Query with placeholder expansion
@@ -118,14 +97,14 @@ M.query = function(key, expansions, file)
 
 	for _, result in ipairs(raw_results) do
 		local value = result.value
-		local captures = result.captures
+		local match = result.match
 
 		if type(value) == "table" then
 			for _, v in ipairs(value) do
-				table.insert(results, patterns.expand_placeholders(v, captures))
+				table.insert(results, patterns.expand_placeholders(v, match))
 			end
 		else
-			table.insert(results, patterns.expand_placeholders(value, captures))
+			table.insert(results, patterns.expand_placeholders(value, match))
 		end
 	end
 
@@ -139,6 +118,10 @@ end
 M.query_file = function(key, file)
 	local results = M.query(key, nil, file)
 	-- Return relative paths from project root as vim-projectionist does
+	-- Normalize paths: remove double slashes and /./ segments
+	for i, path in ipairs(results) do
+		results[i] = path:gsub("//+", "/"):gsub("/%./", "/")
+	end
 	return results
 end
 
@@ -167,14 +150,14 @@ end
 --- @param file string|nil: File path (defaults to current buffer)
 --- @return string|nil: File type
 M.get_file_type = function(file)
-	return M.query_scalar("type", nil, file)
+	return M.query_scalar("type", file)
 end
 
 --- Get alternate file for current or specified file
 --- @param file string|nil: File path (defaults to current buffer)
 --- @return string|nil: Relative path to alternate file
 M.get_alternate_file = function(file)
-	local alternates = M.query("alternate", nil, file)
+	local alternates = M.query_file("alternate", file)
 	return alternates[1]
 end
 
@@ -182,14 +165,14 @@ end
 --- @param file string|nil: File path (defaults to current buffer)
 --- @return table: List of related file paths
 M.get_related_files = function(file)
-	return M.query_file("related", nil, file)
+	return M.query_file("related", file)
 end
 
 --- Get template for current or specified file
 --- @param file string|nil: File path (defaults to current buffer)
 --- @return table|string|nil: Template content
 M.get_template = function(file)
-	return M.query_scalar("template", nil, file)
+	return M.query_scalar("template", file)
 end
 
 --- Template system
@@ -309,6 +292,40 @@ M.setup_commands = function()
 	end, {
 		nargs = 0,
 		desc = "Open project console",
+	})
+
+	vim.api.nvim_create_user_command("Projectionist", function(args)
+		local subcommand = args.fargs[1]
+		local file_arg = args.fargs[2]
+
+		if subcommand == "inspect" then
+			-- Print using tostring metamethod
+			print(tostring(M.inspect(file_arg)))
+		else
+			vim.notify("Unknown Projectionist subcommand: " .. (subcommand or "nil"), vim.log.levels.ERROR)
+		end
+	end, {
+		nargs = "+",
+		complete = function(arg_lead, cmd_line, cursor_pos)
+			local args = vim.split(cmd_line, "%s+", { trimempty = true })
+
+			-- First argument: subcommand
+			if #args <= 2 then
+				local subcommands = { "inspect" }
+				return vim.tbl_filter(function(cmd)
+					return vim.startswith(cmd, arg_lead)
+				end, subcommands)
+			end
+
+			-- Second argument: file completion for inspect
+			if args[2] == "inspect" then
+				-- Use built-in file completion
+				return vim.fn.getcompletion(arg_lead, "file")
+			end
+
+			return {}
+		end,
+		desc = "Projectionist commands (inspect)",
 	})
 end
 
@@ -576,6 +593,194 @@ end
 --- @return table: Active heuristics
 M.get_heuristics = function(file)
 	return M.get_projections(file)
+end
+
+--- Inspect which patterns match a given file
+--- Returns structured data about matching patterns, captures, and query results
+--- @param file string|nil: File path (defaults to current buffer)
+--- @return table: Information with file, root, relative_path, matches, and queries
+M.inspect = function(file)
+	file = utils.get_current_file(file)
+	local root = M.get_project_root(file)
+	local relative_path = M.get_relative_path(file)
+	local projections = M.get_projections(file)
+
+	-- Collect all global heuristics (setup + vim.g)
+	local heuristics = {}
+	if config._config then
+		for k, v in pairs(config._config.heuristics or config._config.patterns or {}) do
+			heuristics[k] = v
+		end
+	end
+	local vim_heuristics = vim.g.projectionist_heuristics or vim.g.projectionist_patterns
+	if vim_heuristics then
+		for k, v in pairs(vim_heuristics) do
+			if heuristics[k] == nil then
+				heuristics[k] = v
+			end
+		end
+	end
+
+	local result = {
+		file = file,
+		root = root,
+		relative_path = relative_path,
+		matches = {},
+		queries = {},
+		projections = projections,
+		heuristics = heuristics,
+	}
+
+	-- Add __tostring metamethod for pretty printing
+	setmetatable(result, {
+		__tostring = function(self)
+			local lines = {}
+			table.insert(lines, "=================================================")
+			table.insert(lines, "Projectionist File Inspection")
+			table.insert(lines, "=================================================")
+			table.insert(lines, string.format("File: %s", self.file or "unknown"))
+			table.insert(lines, string.format("Root: %s", self.root or "not found"))
+			table.insert(lines, string.format("Relative: %s", self.relative_path or "n/a"))
+
+			table.insert(lines, "\n--- Matching Patterns ---")
+			if #self.matches == 0 then
+				table.insert(lines, "No patterns match this file")
+			else
+				for i, match in ipairs(self.matches) do
+					table.insert(lines, string.format("\n%d. Pattern: %s", i, match.pattern))
+					if match.captures and #match.captures > 0 then
+						-- The first capture is used for {} expansion
+						table.insert(lines, string.format("   Match Segment: %s", vim.inspect(match.captures[1])))
+					end
+					table.insert(lines, "   Attributes:")
+					local attr_keys = vim.tbl_keys(match.attributes)
+					table.sort(attr_keys)
+					for _, key in ipairs(attr_keys) do
+						table.insert(lines, string.format("     %s: %s", key, vim.inspect(match.attributes[key])))
+					end
+				end
+			end
+
+			table.insert(lines, "\n--- Query Results ---")
+			local query_keys = { "type", "alternate", "related", "template", "console", "dispatch", "start", "makeprg" }
+			for _, key in ipairs(query_keys) do
+				local value = self.queries[key]
+				if value and (#value > 0 or type(value) ~= "table") then
+					table.insert(lines, string.format("%s: %s", key, vim.inspect(value)))
+				end
+			end
+
+			table.insert(lines, "\n--- Active Projections for Root ---")
+			if not self.projections or next(self.projections) == nil then
+				table.insert(lines, "No projections found for this root")
+			else
+				local patterns_list = vim.tbl_keys(self.projections)
+				table.sort(patterns_list)
+				for _, pattern in ipairs(patterns_list) do
+					table.insert(lines, string.format("Pattern: %s", pattern))
+				end
+			end
+
+			table.insert(lines, "\n--- Global Heuristics ---")
+			if not self.heuristics or next(self.heuristics) == nil then
+				table.insert(lines, "No global heuristics configured")
+			else
+				local h_keys = vim.tbl_keys(self.heuristics)
+				table.sort(h_keys)
+
+				local known_attrs = {
+					type = true,
+					alternate = true,
+					console = true,
+					dispatch = true,
+					template = true,
+					start = true,
+					makeprg = true,
+					make = true,
+				}
+
+				for _, req in ipairs(h_keys) do
+					local value = self.heuristics[req]
+					local is_direct = false
+					if type(value) == "table" then
+						for k, _ in pairs(value) do
+							if type(k) == "string" and known_attrs[k] then
+								is_direct = true
+								break
+							end
+						end
+					end
+
+					if is_direct then
+						table.insert(lines, string.format("Direct Projection: %s", req))
+					else
+						table.insert(lines, string.format("Requirement: %s", req))
+						if type(value) == "table" then
+							local sub_patterns = vim.tbl_keys(value)
+							table.sort(sub_patterns)
+							for _, p in ipairs(sub_patterns) do
+								if type(p) == "string" and (p:find("%*") or p:find("/")) then
+									table.insert(lines, string.format("  Pattern: %s", p))
+								end
+							end
+						end
+					end
+				end
+			end
+
+			return table.concat(lines, "\n")
+		end,
+	})
+
+	if not projections or not relative_path then
+		return result
+	end
+
+	-- Find all matching patterns
+	local patterns_keys = vim.tbl_keys(projections)
+	table.sort(patterns_keys, function(a, b)
+		return #a > #b
+	end)
+
+	for _, pattern in ipairs(patterns_keys) do
+		local attrs = projections[pattern]
+		local match_val = ""
+		local matched = false
+
+		if pattern == "*" then
+			matched = true
+			match_val = relative_path
+		elseif not pattern:find("%*") then
+			matched = (pattern == relative_path)
+			match_val = pattern
+		else
+			match_val = patterns.vim_match(relative_path, pattern)
+			matched = (match_val ~= "")
+		end
+
+		if matched then
+			table.insert(result.matches, {
+				pattern = pattern,
+				captures = { match_val },
+				attributes = attrs,
+			})
+		end
+	end
+
+	-- Matches are already sorted by pattern length decrementing from the loop
+	-- Add query results
+	result.queries = {
+		type = M.query("type", nil, file),
+		alternate = M.query("alternate", nil, file),
+		related = M.query("related", nil, file),
+		template = M.query("template", nil, file),
+		console = M.query("console", nil, file),
+		dispatch = M.query("dispatch", nil, file),
+		start = M.query("start", nil, file),
+		makeprg = M.query("makeprg", nil, file),
+	}
+
+	return result
 end
 
 return M

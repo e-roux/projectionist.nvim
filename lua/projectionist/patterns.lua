@@ -1,5 +1,6 @@
 --- @class ProjectionistPatterns
 --- Pattern matching and placeholder expansion for projectionist.nvim
+local utils = require("projectionist.utils")
 local M = {}
 
 --- Convert vim glob pattern to lua pattern with capture groups
@@ -7,9 +8,15 @@ local M = {}
 --- @return string: Lua pattern with captures
 --- @return number: Number of capture groups
 M.glob_to_pattern = function(pattern)
+	-- If pattern has only ONE asterisk and no double star, make it recursive like Vim-projectionist
+	-- unless it's the only character
+	local p = pattern
+	if p ~= "*" and not p:find("%*%*") and select(2, p:gsub("%*", "")) == 1 then
+		p = p:gsub("%*", "**/*")
+	end
+
 	local capture_count = 0
-	local lua_pattern = pattern
-		:gsub("%%", "%%%%")
+	local lua_pattern = p:gsub("%%", "%%%%")
 		:gsub("%.", "%%.")
 		:gsub("%+", "%%+")
 		:gsub("%-", "%%-")
@@ -21,147 +28,206 @@ M.glob_to_pattern = function(pattern)
 		:gsub("%]", "%%]")
 
 	-- Handle ** before * to avoid double replacement
+	local double_star_token = "___DOUBLE_STAR___"
 	lua_pattern = lua_pattern:gsub("%*%*", function()
 		capture_count = capture_count + 1
-		return "([^%z]*)" -- Match any path including /
+		return double_star_token
 	end)
 
 	lua_pattern = lua_pattern:gsub("%*", function()
 		capture_count = capture_count + 1
-		return "([^/]*)" -- Match single path segment
+		return "([^/]*)" -- Match single segment
 	end)
+
+	-- Restore double star pattern
+	lua_pattern = lua_pattern:gsub(double_star_token, "(.*)") -- Match any path including /
 
 	return "^" .. lua_pattern .. "$", capture_count
 end
 
---- Apply placeholder expansions to template string
---- @param template string: Template with placeholders
---- @param captures table: Captured values from pattern matching
+--- Apply placeholder expansions using standard transformations
+--- @param template string: Template with placeholders like {match|dot} or {}
+--- @param match_or_captures any: The matched value (string) or captured groups (table)
 --- @return string: Expanded template
-M.expand_placeholders = function(template, captures)
-	if not template or not captures then
+M.expand_placeholders = function(template, match_or_captures)
+	if not template or not match_or_captures then
 		return template or ""
+	end
+
+	local match_val
+	local captures
+
+	if type(match_or_captures) == "string" then
+		match_val = match_or_captures
+		captures = { match_or_captures }
+	else
+		captures = match_or_captures
+		match_val = captures[#captures] or ""
 	end
 
 	local result = template
 	local capture_idx = 1
 
-	-- Replace {} with sequential captures
+	-- Replace {} with sequential captures (Vim-style)
+	-- But if there's only one capture, always use it
 	result = result:gsub("{}", function()
+		if #captures == 1 then
+			return captures[1]
+		end
 		local value = captures[capture_idx] or ""
 		capture_idx = capture_idx + 1
 		return value
 	end)
 
-	-- Get the last capture for basename/dirname operations
-	local last_capture = captures[#captures] or ""
+	-- Replace placeholders with transformations: {match|transformation}
+	result = result:gsub("{([^{}]*)}", function(content)
+		if content == "" then -- Already handled above?
+			return "{}"
+		end
 
-	-- Handle special placeholders
-	local expansions = {
-		["{basename}"] = function()
-			return last_capture:match("([^/]*)$") or ""
-		end,
-		["{dirname}"] = function()
-			local dirname = last_capture:match("^(.*)/[^/]*$")
-			if dirname then
-				return dirname
-			else
-				-- If no directory separator, dirname is the same as basename for compatibility
-				return last_capture:match("([^/]*)$") or ""
-			end
-		end,
-		["{dot}"] = function()
-			return last_capture:gsub("/", ".")
-		end,
-		["{underscore}"] = function()
-			return last_capture:gsub("/", "_")
-		end,
-		["{backslash}"] = function()
-			return last_capture:gsub("/", "\\")
-		end,
-		["{colons}"] = function()
-			return last_capture:gsub("/", "::")
-		end,
-		["{hyphenate}"] = function()
-			return last_capture:gsub("_", "-")
-		end,
-		["{blank}"] = function()
-			return last_capture:gsub("[_-]", " ")
-		end,
-		["{uppercase}"] = function()
-			return last_capture:upper()
-		end,
-		["{camelcase}"] = function()
-			local parts = vim.split(last_capture, "[/_-]")
-			local camel_result = parts[1] or ""
-			for i = 2, #parts do
-				camel_result = camel_result .. (parts[i]:sub(1, 1):upper() .. parts[i]:sub(2))
-			end
-			return camel_result
-		end,
-		["{snakecase}"] = function()
-			return last_capture:gsub("([a-z])([A-Z])", "%1_%2"):lower():gsub("/", "_")
-		end,
-		["{capitalize}"] = function()
-			return last_capture:gsub("(%a)([^/]*)", function(first, rest)
-				return first:upper() .. rest
-			end)
-		end,
-	}
+		local parts = vim.split(content, "|")
+		-- If it's a known transformation, treat first part as 'match' if it's not a capture index
+		local value = match_val
 
-	-- Apply all expansions
-	for placeholder, expansion_func in pairs(expansions) do
-		result = result:gsub(vim.pesc(placeholder), expansion_func)
-	end
+		-- Check if first part is a number (capture index)
+		local first = parts[1]
+		if tonumber(first) then
+			value = captures[tonumber(first)] or ""
+			table.remove(parts, 1)
+		elseif first == "match" or first == "basename" or first == "dirname" then
+			-- 'match' is default. basename/dirname were legacy tokens
+			if first == "basename" then
+				value = M.transformations.basename(match_val)
+			elseif first == "dirname" then
+				value = M.transformations.dirname(match_val)
+			end
+			table.remove(parts, 1)
+		end
+
+		-- Apply transformations sequentially
+		for _, transform in ipairs(parts) do
+			if M.transformations[transform] then
+				value = M.transformations[transform](value)
+			end
+		end
+
+		return value
+	end)
 
 	return result
 end
 
---- Test if a file path matches a glob pattern
---- @param pattern string: Glob pattern to test
---- @param file_path string: File path to test against
---- @return table|nil: Match result with pattern, captures, and file_path, or nil if no match
-M.match_pattern = function(pattern, file_path)
-	local lua_pattern, capture_count = M.glob_to_pattern(pattern)
-	local captures = { file_path:match(lua_pattern) }
+--- Standard transformations from projectionist.vim
+M.transformations = {
+	dot = function(input)
+		return input:gsub("/", ".")
+	end,
+	underscore = function(input)
+		return input:gsub("/", "_")
+	end,
+	backslash = function(input)
+		return input:gsub("/", "\\")
+	end,
+	colons = function(input)
+		return input:gsub("/", "::")
+	end,
+	hyphenate = function(input)
+		return input:gsub("_", "-")
+	end,
+	blank = function(input)
+		return input:gsub("[_-]", " ")
+	end,
+	uppercase = function(input)
+		return input:upper()
+	end,
+	camelcase = function(input)
+		return vim.fn.substitute(input, [[[_-]\(.\)]], [[\u\1]], "g")
+	end,
+	capitalize = function(input)
+		return vim.fn.substitute(input, [[\%(^\|/\)\zs\(.\)]], [[\u\1]], "g")
+	end,
+	snakecase = function(input)
+		local str = vim.fn.substitute(input, [[\v(\u+)(\u\l)]], [[\1_\2]], "g")
+		str = vim.fn.substitute(str, [[\v(\l|\d)(\u)]], [[\1_\2]], "g")
+		return str:lower()
+	end,
+	dirname = function(input)
+		if not input:find("/") then
+			return "."
+		end
+		return input:match("^(.*)/[^/]*$")
+	end,
+	basename = function(input)
+		local b = input:match("([^/]*)$") or input
+		return b:match("^(.*)%.[^.]*$") or b
+	end,
+	singular = function(input)
+		return vim.fn
+			.substitute(input, [[\v%([Mm]ov|[aeio])@<!ies$]], "ys", "")
+			:gsub("ves$", "fs")
+			:gsub("ices$", "exs")
+			:gsub("s$", "")
+	end,
+	plural = function(input)
+		return vim.fn.substitute(input, [[\v[aeio]@<!y$]], "ie", "") .. "s"
+	end,
+	open = function()
+		return "{"
+	end,
+	close = function()
+		return "}"
+	end,
+	nothing = function()
+		return ""
+	end,
+	vim = function(input)
+		return input
+	end,
+}
 
-	-- Check if we got the expected number of captures
-	if #captures == capture_count and captures[1] then
-		return {
-			pattern = pattern,
-			captures = captures,
-			file_path = file_path,
-		}
+--- Port of Tim Pope's s:match from projectionist.vim (internal usage)
+--- @param file string: The relative path to test
+--- @param pattern string: The projection pattern
+--- @return string: The matched value, or empty string if no match
+M.vim_match = function(file, pattern)
+	-- Support recursive transformation like vim-projectionist
+	local p = pattern
+	if p ~= "*" and not p:find("%*%*") and select(2, p:gsub("%*", "")) == 1 then
+		p = p:gsub("%*", "**/*")
 	end
 
-	return nil
-end
-
---- Test multiple patterns against a file path and return all matches
---- @param patterns table: Array of glob patterns
---- @param file_path string: File path to test
---- @return table: Array of match results, sorted by specificity
-M.match_patterns = function(patterns, file_path)
-	local matches = {}
-
-	for _, pattern in ipairs(patterns) do
-		local match = M.match_pattern(pattern, file_path)
-		if match then
-			table.insert(matches, match)
-		end
+	local parts = vim.split(p, "**", true)
+	if #parts < 2 then
+		return ""
 	end
 
-	-- Sort by pattern specificity (fewer wildcards = more specific)
-	table.sort(matches, function(a, b)
-		local a_wildcards = select(2, a.pattern:gsub("%*", ""))
-		local b_wildcards = select(2, b.pattern:gsub("%*", ""))
-		if a_wildcards ~= b_wildcards then
-			return a_wildcards < b_wildcards
-		end
-		return #a.pattern > #b.pattern
-	end)
+	local prefix = parts[1]:gsub("\\", "/")
+	local rest = parts[2]
+	local infix, suffix
 
-	return matches
+	if rest:find("%*") then
+		infix = rest:match("^(.*)%*"):gsub("\\", "/")
+		suffix = rest:match("%*([^%*]*)$"):gsub("\\", "/")
+	else
+		infix = ""
+		suffix = rest:gsub("\\", "/")
+	end
+
+	local f = file:gsub("\\", "/")
+	if not utils.starts_with(f, prefix) or not utils.ends_with(f, suffix) then
+		return ""
+	end
+
+	local match_val = f:sub(#prefix + 1, #f - #suffix)
+	if infix == "/" then
+		return match_val
+	end
+
+	local search_str = "/" .. match_val
+	local pattern_regex = [[\V]] .. infix .. [[\ze[^/]*$]]
+	local clean = vim.fn.substitute(search_str, pattern_regex, "/", ""):sub(2)
+
+	return (clean == match_val) and "" or clean
 end
 
 return M

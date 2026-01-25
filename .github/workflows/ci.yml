@@ -24,18 +24,19 @@ jobs:
       with:
         neovim: true
         version: ${{ matrix.neovim-version }}
-        
-    - name: 📚 Install test dependencies
-      run: |
-        git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
+    
+    - name: 💾 Cache test dependencies
+      uses: actions/cache@v3
+      with:
+        path: lua_modules
+        key: ${{ runner.os }}-lua-deps-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-lua-deps-
         
     - name: 🧪 Run tests
       run: |
         nvim --version
-        make test
-        
-    - name: 🐚 Test with shell script
-      run: ./test.sh
+        make test LUA_MODULES_DIR=lua_modules
 
   lint:
     name: 🎨 Lint
@@ -51,21 +52,16 @@ jobs:
         chmod +x stylua
         sudo mv stylua /usr/local/bin/
         
-    - name: ✨ Check Lua formatting
-      run: |
-        stylua --check lua/ test/
-        
     - name: 🔍 Install luacheck
       run: |
         sudo apt-get update
         sudo apt-get install -y luarocks
         sudo luarocks install luacheck
         
-    - name: 🔍 Run luacheck
-      run: |
-        luacheck .
+    - name: ✨ Run lint checks
+      run: make lint
 
-  docs:
+  doc:
     name: 📖 Documentation
     runs-on: ubuntu-latest
     
@@ -73,24 +69,14 @@ jobs:
     - name: 📦 Checkout code
       uses: actions/checkout@v4
       
-    - name: 📋 Check documentation files
-      run: |
-        # Check that all required documentation exists
-        test -f README.md
-        test -f CHANGELOG.md
-        test -f doc/projectionist.txt
-        test -f LICENSE
-        
-    - name: ⚡ Install Neovim for help validation
+    - name: ⚡ Install Neovim
       uses: rhysd/action-setup-vim@v1
       with:
         neovim: true
         version: stable
         
-    - name: ✅ Validate help tags
-      run: |
-        nvim --headless -c "helptags doc/" -c "qa!"
-        test -f doc/tags
+    - name: ✅ Validate documentation
+      run: make doc.validate
 
   compatibility:
     name: 🔄 Compatibility Test
@@ -105,27 +91,14 @@ jobs:
       with:
         neovim: true
         version: stable
+    
+    - name: 💾 Cache test dependencies
+      uses: actions/cache@v3
+      with:
+        path: lua_modules
+        key: ${{ runner.os }}-lua-deps-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-lua-deps-
         
-    - name: 🌐 Test cross-shell compatibility
-      run: |
-        # Test in bash
-        bash -c "./test.sh"
-        
-        # Test in zsh (if available)
-        if command -v zsh >/dev/null 2>&1; then
-          zsh -c "./test.sh"
-        fi
-        
-        # Test Make target
-        make test
-        
-    - name: 🔧 Test minimal init compatibility
-      run: |
-        # Clone plenary if not already present
-        if [ ! -d "lua_modules/plenary" ]; then
-          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim lua_modules/plenary
-        fi
-        
-        # Test with different minimal init paths
-        nvim --headless -u test/minimal_init.vim -c 'lua print("Init test passed")' -c 'qa!'
-        nvim --headless -u minimal_init.vim -c 'lua print("Root init test passed")' -c 'qa!'
+    - name: 🧪 Run tests via Make
+      run: make test LUA_MODULES_DIR=lua_modules
