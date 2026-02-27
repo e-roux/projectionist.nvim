@@ -1,0 +1,193 @@
+*projectionist.txt*  Project navigation and file alternation for Neovim
+
+Author:  Tim Pope <http://tpo.pe/>
+License: Same terms as Vim itself (see |license|)
+Ported to Lua by: e-roux
+
+This plugin is only available if 'compatible' is not set.
+
+INTRODUCTION                                    *projectionist*
+
+Projectionist provides granular project configuration using "projections".
+What are projections?  Let's start with an example.
+
+>
+    {
+      "app/*.py": {
+        "type": "source",
+        "alternate": "test/test_{}.py"
+      },
+      "test/test_*.py": {
+        "type": "test",
+        "alternate": "app/{}.py"
+      }
+    }
+<
+
+The keys are |glob| patterns.  When you open a file, projectionist checks
+if any of the patterns match that file's path inside the project.  If so,
+that projection is activated.
+
+The most basic thing you can do is define an alternate file:
+>
+    :A
+<
+This opens the alternate file in the current window.  There are also |:AS|,
+|:AV|, and |:AT|, for opening the alternate file in a split, vertical split,
+and tab page, respectively.
+
+NAVIGATION COMMANDS                             *projectionist-navigation*
+
+In addition to the |:A| command and friends, projectionist provides
+navigation commands for each "type" defined in your projections:
+
+                                                *:E* *:S* *:V* *:T*
+:E{type} {file}         Edit {file} relative to a path in the projection.
+:S{type} {file}         Like :E{type}, but open in a split.
+:V{type} {file}         Like :E{type}, but open in a vertical split.
+:T{type} {file}         Like :E{type}, but open in a new tab.
+
+For example, if you define a "test" type, you can use |:Etest| to edit
+a test file.
+
+If no {file} is given, you get file completion relative to the projection
+path.  This is handy for an overview of all files of a given type.
+
+If the "type" contains a "/", it is considered a literal path rather than
+a projection type.  This provides a conventional means to navigate to
+standard project files:
+
+                                                *:Eproject* *:Sproject*
+                                                *:Vproject* *:Tproject*
+:E[project] {file}      Edit {file} relative to the project root.
+:S[project] {file}      Like :Eproject, but open in a split.
+:V[project] {file}      Like :Eproject, but open in a vertical split.
+:T[project] {file}      Like :Eproject, but open in a new tab.
+
+CONFIGURATION                                   *projectionist-configuration*
+
+Projections are maps from |glob| patterns to projection objects.  The most
+important projection property is "alternate", which defines the alternate
+file for |:A| and friends:
+
+>
+    "app/*.py": {"alternate": "test/test_{}.py"}
+<
+
+Here, * is a placeholder.  You can have multiple placeholders and reference
+them with {1}, {2}, etc., but {*} and {} are synonyms for {1}.  In addition
+to *, you can use ** to match zero or more path segments and *** to match
+zero or more of any character including /.
+
+Use & to reference the original file name with the extension removed:
+
+>
+    "*.py": {"alternate": "{}&_test.py"}
+<
+
+Use {dirname} to reference the directory of the file:
+
+>
+    "*.py": {"alternate": "{dirname}/test_{}.py"}
+<
+
+The "type" property is used to populate the navigation commands:
+
+>
+    "app/*.py": {"type": "source", "alternate": "test/test_{}.py"}
+<
+
+With this in place, you could use :Esource to navigate to a source file.
+
+If the type contains a "/", it is used literally as a path prefix:
+
+>
+    "*.md": {"type": "doc"}
+<
+
+This would provide an |:Edoc| command.
+
+The "template" property defines what gets inserted when you create a new file:
+
+>
+    "test/test_*.py": {
+      "type": "test",
+      "template": [
+        "import unittest",
+        "",
+        "class Test{}(unittest.TestCase):",
+        "    def test_{underscore}(self):",
+        "        pass"
+      ]
+    }
+<
+
+Curly braces in the template are expanded with the following variables:
+
+{} or {*}       The value of the * placeholder
+{1}, {2}, ...   The value of the 1st, 2nd, ... placeholder
+{basename}      The basename of the file
+{dirname}       The directory of the file
+{camelcase}     Convert to CamelCase
+{underscore}    Convert to snake_case
+{uppercase}     Convert to UPPERCASE
+{lowercase}     Convert to lowercase
+
+HEURISTICS                                      *projectionist-heuristics*
+
+In addition to projections defined in ".projections.json" in the root of the
+project, projectionist also supports heuristics.  These are general purpose
+projections that are activated based on the presence of certain files.
+
+For example, if a "Makefile" is found, it might activate projections for
+C source files.
+
+The default heuristics can be supplemented or overridden by placing
+additional heuristics in "heuristic.json" in the project root.
+
+SETUP                                           *projectionist-setup*
+
+For Neovim, this plugin requires Lua configuration:
+
+>
+    require('projectionist').setup({
+      -- Optional: custom heuristics
+      heuristics = {
+        ["*.py"] = {
+          alternate = "test/test_{}.py",
+          type = "source"
+        }
+      }
+    })
+<
+
+The setup function accepts the following options:
+
+heuristics      Dictionary of custom heuristics to add or override
+enable_commands Enable the navigation commands (default: true)
+debug          Enable debug logging (default: false)
+
+FUNCTIONS                                       *projectionist-functions*
+
+                                                *projectionist.query_file()*
+projectionist.query_file({key}, {file})
+                Query a file for a projection property.
+
+                                                *projectionist.expand()*
+projectionist.expand({template}, {file})
+                Expand a template string with placeholders for the given file.
+
+                                                *projectionist.path()*
+projectionist.path({file})
+                Get the alternate path for a file, if any.
+
+ABOUT                                           *projectionist-about*
+
+Grab the latest version or report a bug on GitHub:
+
+http://github.com/e-roux/projectionist.nvim
+
+Original vim-projectionist by Tim Pope:
+http://github.com/tpope/vim-projectionist
+
+ vim:tw=78:et:ft=help:norl:

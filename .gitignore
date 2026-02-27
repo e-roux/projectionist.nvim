@@ -1,0 +1,57 @@
+# Git directories
+.git
+
+# Cache and local directories
+.cache
+.local/share
+.local/bin
+.local/share/mlib
+
+# Build and distribution
+dist
+
+# Python virtual environments
+.venv
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Lua modules (when used as dependencies)
+lua_modules/
+luarocks/
+
+# Legacy vim-projectionist (keep old implementation separate)
+old/
+
+# Test artifacts and logs
+*.log
+test_results/
+coverage/
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test fixtures and temporary files (these should not be committed)
+test/fixtures/
+app/
+src/
+nvim/config/
+zsh/config/
+*.toml
+*.json
+go.mod
+deno.json
+pyproject.toml

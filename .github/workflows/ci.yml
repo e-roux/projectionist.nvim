@@ -1,0 +1,104 @@
+name: 🚀 CI
+
+on:
+  push:
+    branches: [ main, lua ]
+  pull_request:
+    branches: [ main, lua ]
+
+jobs:
+  test:
+    name: 🧪 Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        neovim-version: ['stable', 'nightly']
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⚡ Install Neovim
+      uses: rhysd/action-setup-vim@v1
+      with:
+        neovim: true
+        version: ${{ matrix.neovim-version }}
+    
+    - name: 💾 Cache test dependencies
+      uses: actions/cache@v3
+      with:
+        path: lua_modules
+        key: ${{ runner.os }}-lua-deps-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-lua-deps-
+        
+    - name: 🧪 Run tests
+      run: |
+        nvim --version
+        make test LUA_MODULES_DIR=lua_modules
+
+  lint:
+    name: 🎨 Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🎨 Install stylua
+      run: |
+        wget -qO- https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux-x86_64.zip | funzip > stylua
+        chmod +x stylua
+        sudo mv stylua /usr/local/bin/
+        
+    - name: 🔍 Install luacheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y luarocks
+        sudo luarocks install luacheck
+        
+    - name: ✨ Run lint checks
+      run: make lint
+
+  doc:
+    name: 📖 Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⚡ Install Neovim
+      uses: rhysd/action-setup-vim@v1
+      with:
+        neovim: true
+        version: stable
+        
+    - name: ✅ Validate documentation
+      run: make doc.validate
+
+  compatibility:
+    name: 🔄 Compatibility Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⚡ Install Neovim
+      uses: rhysd/action-setup-vim@v1
+      with:
+        neovim: true
+        version: stable
+    
+    - name: 💾 Cache test dependencies
+      uses: actions/cache@v3
+      with:
+        path: lua_modules
+        key: ${{ runner.os }}-lua-deps-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-lua-deps-
+        
+    - name: 🧪 Run tests via Make
+      run: make test LUA_MODULES_DIR=lua_modules
