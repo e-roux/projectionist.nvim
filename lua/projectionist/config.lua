@@ -191,9 +191,17 @@ M.is_direct_projection = function(value)
 		return false
 	end
 	local attr_keys = {
-		type = true, alternate = true, console = true, dispatch = true,
-		template = true, start = true, makeprg = true, make = true,
-		path = true, suffixesadd = true, compiler = true,
+		type = true,
+		alternate = true,
+		console = true,
+		dispatch = true,
+		template = true,
+		start = true,
+		makeprg = true,
+		make = true,
+		path = true,
+		suffixesadd = true,
+		compiler = true,
 	}
 	for k, _ in pairs(value) do
 		if type(k) == "string" and attr_keys[k] then
@@ -251,7 +259,9 @@ M.get_projections = function(file)
 		end
 
 		local parent = vim.fs.dirname(dir)
-		if parent == dir then break end
+		if parent == dir then
+			break
+		end
 		dir = parent
 	end
 
